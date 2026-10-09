@@ -1,10 +1,12 @@
 import 'dart:math' as math;
 
+import 'package:castlegps/game/bonus.dart';
 import 'package:castlegps/game/castle.dart';
 import 'package:castlegps/game/combat.dart';
 import 'package:castlegps/game/economy.dart';
 import 'package:castlegps/game/game_state.dart';
 import 'package:castlegps/game/geo.dart';
+import 'package:castlegps/services/poi_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 
@@ -40,11 +42,11 @@ GameState walledGame(DateTime Function() clock, {int seed = 1}) {
   game.placeCastle();
   final loop = squareLoop(center, 50);
   game.onPosition(loop.first);
-  game.startWall();
+  game.startWall(game.castles.first);
   for (final p in loop.skip(1)) {
     game.onPosition(p);
   }
-  expect(game.castle!.hasWall, isTrue);
+  expect(game.castles.first.hasWall, isTrue);
   return game;
 }
 
@@ -69,13 +71,13 @@ void main() {
     test('farmland makes food, barracks turn food into soldiers', () {
       final e = Economy(food: 0, updatedAt: t0);
       e.advance(t0.add(const Duration(hours: 1)),
-          hectares: 1, farmShare: 1, wallFraction: 1, rules: rules);
+          foodPerHour: 20, soldiersPerHour: 0, rules: rules);
       expect(e.food, closeTo(20, 0.01));
       expect(e.garrison, 0);
 
       final b = Economy(food: 100, updatedAt: t0);
       b.advance(t0.add(const Duration(hours: 1)),
-          hectares: 1, farmShare: 0, wallFraction: 1, rules: rules);
+          foodPerHour: 0, soldiersPerHour: 2, rules: rules);
       expect(b.garrison, 2);
       expect(b.food, lessThan(100 - 2 * rules.foodPerSoldier + 0.01));
     });
@@ -83,7 +85,7 @@ void main() {
     test('no food means no new soldiers', () {
       final e = Economy(food: 0, updatedAt: t0);
       e.advance(t0.add(const Duration(hours: 5)),
-          hectares: 1, farmShare: 0, wallFraction: 1, rules: rules);
+          foodPerHour: 0, soldiersPerHour: 2, rules: rules);
       expect(e.garrison, 0);
       expect(e.training, 1);
     });
@@ -92,8 +94,8 @@ void main() {
       final strong = Economy(food: 0, updatedAt: t0);
       final weak = Economy(food: 0, updatedAt: t0);
       final later = t0.add(const Duration(hours: 1));
-      strong.advance(later, hectares: 1, farmShare: 1, wallFraction: 1, rules: rules);
-      weak.advance(later, hectares: 1, farmShare: 1, wallFraction: 0, rules: rules);
+      strong.advance(later, foodPerHour: 20 * rules.efficiency(1), soldiersPerHour: 0, rules: rules);
+      weak.advance(later, foodPerHour: 20 * rules.efficiency(0), soldiersPerHour: 0, rules: rules);
       expect(weak.food, closeTo(strong.food * 0.25, 0.01));
     });
 
@@ -137,14 +139,101 @@ void main() {
   });
 
   group('GameState', () {
-    test('a walled castle produces food and soldiers over time', () {
+    test('a farming and a military region together make food and soldiers', () {
       var now = t0;
       final game = walledGame(() => now);
-      game.setFarmShare(0.5);
+      expect(game.pendingEvent, isA<RegionBuiltEvent>());
+      game.setRegionType(game.castles.first, RegionType.farming);
+
+      // A second region 300 m east, set to military.
+      final east = offset(center, 300, 0);
+      game.simulateWalkTo(east);
+      expect(game.placeCastle(), isTrue);
+      final loop = squareLoop(east, 50);
+      game.simulateWalkTo(loop.first);
+      game.startWall(game.castles.last);
+      for (final p in loop.skip(1)) {
+        game.onPosition(p);
+      }
+      expect(game.castles.length, 2);
+      game.setRegionType(game.castles.last, RegionType.military);
+
       now = t0.add(const Duration(hours: 4));
       game.tick();
-      expect(game.economy.food, greaterThan(20));
       expect(game.economy.garrison, greaterThan(0));
+      expect(game.rates.food, greaterThan(0));
+      expect(game.rates.soldiers, greaterThan(0));
+    });
+
+    test('placing a castle and just walking a loop builds the wall', () {
+      final game = GameState(clock: () => t0, random: math.Random(1));
+      game.onPosition(center);
+      expect(game.placeCastle(), isTrue);
+      expect(game.walkedPath, isEmpty); // waits until you leave the castle
+      final loop = squareLoop(center, 50);
+      game.simulateWalkTo(loop.first);
+      for (final p in loop.skip(1)) {
+        game.onPosition(p);
+      }
+      expect(game.castles.single.hasWall, isTrue);
+      expect(game.pendingEvent, isA<RegionBuiltEvent>());
+    });
+
+    test('farming alone makes no soldiers', () {
+      var now = t0;
+      final game = walledGame(() => now);
+      now = t0.add(const Duration(hours: 4));
+      game.tick();
+      expect(game.economy.garrison, 0);
+      expect(game.economy.food, greaterThan(20));
+    });
+
+    test('new castles must be outside other regions and spaced apart', () {
+      final game = walledGame(() => t0);
+      game.simulateWalkTo(center);
+      expect(game.placeCastle(), isFalse);
+      expect(game.placeBlockedReason, contains('inside'));
+      game.simulateWalkTo(offset(center, 90, 0));
+      expect(game.placeCastle(), isTrue);
+      expect(game.drawingWall, isTrue);
+      game.cancelWall();
+      expect(game.castles.length, 1); // a castle without a wall is dropped
+    });
+
+    test('walking into a restaurant circle gives food and a boost once per cooldown', () {
+      var now = t0;
+      final game = walledGame(() => now);
+      final spot = offset(center, 200, 200);
+      game.setBonusPoints([BonusPoint(id: 'node/1', name: 'Ramen Ya', position: spot)]);
+      final foodBefore = game.economy.food;
+
+      game.simulateWalkTo(spot);
+      expect(game.pendingEvent, isA<BonusEvent>());
+      expect(game.economy.food, closeTo(foodBefore + 15, 1));
+      expect(game.boosted, isTrue);
+      expect(game.rates.food, closeTo(game.regionOutput(game.castles.first).food * 1.5, 0.01));
+
+      // Walking out and back in right away gives nothing more.
+      game.pendingEvent = null;
+      game.simulateWalkTo(offset(spot, 60, 0));
+      game.simulateWalkTo(spot);
+      expect(game.pendingEvent, isNull);
+
+      now = t0.add(const Duration(hours: 3));
+      expect(game.boosted, isFalse);
+      expect(game.bonusReady(game.bonusPoints.first), isTrue);
+    });
+
+    test('Overpass responses become bonus points', () {
+      const body = '{"elements":['
+          '{"type":"node","id":1,"lat":35.68,"lon":139.76,"tags":{"name":"Ramen Ya","amenity":"restaurant"}},'
+          '{"type":"way","id":2,"center":{"lat":35.69,"lon":139.77},"tags":{"amenity":"cafe"}},'
+          '{"type":"node","id":3}]}';
+      final points = PoiService.parseOverpass(body);
+      expect(points.length, 2);
+      expect(points.first.name, 'Ramen Ya');
+      expect(points.last.id, 'way/2');
+      expect(points.last.name, 'Restaurant');
     });
 
     test('a siege marches to the weakest wall and resolves', () {
@@ -152,7 +241,7 @@ void main() {
       final game = walledGame(() => now);
       game.siegeNow();
       final siege = game.siege!;
-      final weakest = game.castle!.weakestSegment(now, game.rules);
+      final weakest = game.castles.first.weakestSegment(now, game.rules);
       expect(siege.segmentIndex, weakest);
       expect(metersBetween(siege.start, siege.target), closeTo(250, 2));
 
@@ -189,12 +278,12 @@ void main() {
     test('fortify spends parts to strengthen walls', () {
       var now = t0;
       final game = walledGame(() => now);
-      expect(game.canFortify, isFalse);
+      expect(game.canFortify(game.castles.first), isFalse);
       game.economy.parts = 3;
-      final before = game.castle!.averageStrength(now, game.rules);
-      game.fortify();
+      final before = game.castles.first.averageStrength(now, game.rules);
+      game.fortify(game.castles.first);
       expect(game.economy.parts, 0);
-      expect(game.castle!.averageStrength(now, game.rules), closeTo(before + 30, 0.01));
+      expect(game.castles.first.averageStrength(now, game.rules), closeTo(before + 30, 0.01));
     });
 
     test('state survives save and load', () async {
@@ -203,7 +292,7 @@ void main() {
       final game = GameState(clock: () => now, storage: storage, random: math.Random(1));
       game.onPosition(center);
       game.placeCastle();
-      game.castle!.wall = buildWall(squareLoop(center, 50), center, now, game.rules).segments!;
+      game.castles.first.wall = buildWall(squareLoop(center, 50), center, now, game.rules).segments!;
       game.economy
         ..food = 42
         ..garrison = 3

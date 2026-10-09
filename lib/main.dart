@@ -5,11 +5,13 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'game/bonus.dart';
 import 'game/castle.dart';
 import 'game/combat.dart';
 import 'game/game_state.dart';
 import 'game/geo.dart';
 import 'services/location_service.dart';
+import 'services/poi_service.dart';
 
 void main() {
   runApp(const CastleGpsApp());
@@ -49,14 +51,19 @@ class MapScreen extends StatefulWidget {
 class _MapScreenState extends State<MapScreen> {
   final game = GameState(storage: PrefsStorage());
   final location = LocationService();
+  final poi = PoiService();
   final mapController = MapController();
   StreamSubscription<LatLng>? _positionSub;
-  Timer? _decayTimer;
+  Timer? _tickTimer;
   bool _followPlayer = true;
   bool _mapReady = false;
 
   /// Debug: long-press the map to move there, for testing without walking.
   bool _simulate = false;
+
+  /// Where restaurants were last loaded around, and whether a load is running.
+  LatLng? _poiCenter;
+  bool _poiLoading = false;
 
   @override
   void initState() {
@@ -65,7 +72,7 @@ class _MapScreenState extends State<MapScreen> {
     game.load();
     _startLocation();
     // Fast enough to animate a marching siege monster.
-    _decayTimer = Timer.periodic(const Duration(seconds: 2), (_) => game.tick());
+    _tickTimer = Timer.periodic(const Duration(seconds: 2), (_) => game.tick());
   }
 
   Future<void> _startLocation() async {
@@ -80,10 +87,26 @@ class _MapScreenState extends State<MapScreen> {
     });
   }
 
+  /// Loads restaurants when the player first appears or moves 300 m away.
+  Future<void> _maybeLoadRestaurants(LatLng p) async {
+    final last = _poiCenter;
+    if (_poiLoading || (last != null && metersBetween(last, p) < 300)) return;
+    _poiLoading = true;
+    _poiCenter = p;
+    try {
+      game.setBonusPoints(await poi.restaurantsNear(p));
+    } catch (_) {
+      _poiCenter = last; // try again on the next move
+    } finally {
+      _poiLoading = false;
+    }
+  }
+
   void _onGameChanged() {
     final p = game.position;
-    if (_mapReady && _followPlayer && p != null) {
-      mapController.move(p, mapController.camera.zoom);
+    if (p != null) {
+      if (_mapReady && _followPlayer) mapController.move(p, mapController.camera.zoom);
+      _maybeLoadRestaurants(p);
     }
     final event = game.pendingEvent;
     if (event != null) {
@@ -95,35 +118,45 @@ class _MapScreenState extends State<MapScreen> {
 
   void _showEvent(GameEvent event) {
     if (!mounted) return;
-    final (title, body) = switch (event) {
-      SiegeEvent(:final kind, :final outcome) => outcome.held
-          ? (
-              'The wall held!',
-              'A ${kind.name} (attack ${outcome.attack.toStringAsFixed(0)}) hit your weakest wall, '
-                  'but wall and garrison defended with ${outcome.defense.toStringAsFixed(0)}. '
-                  'Garrison lost: ${outcome.garrisonLost}.'
-            )
-          : (
-              'The wall was breached!',
-              'A ${kind.name} (attack ${outcome.attack.toStringAsFixed(0)}) broke through a defense of '
-                  '${outcome.defense.toStringAsFixed(0)}. That wall segment is down, '
-                  '${outcome.garrisonLost} garrison soldiers fell and '
-                  '${outcome.foodLost.toStringAsFixed(0)} food was stolen. Walk it to rebuild it.'
-            ),
-      HuntEvent(:final kind, :final outcome) => outcome.won
-          ? (
-              '${kind.name} defeated!',
-              'Your squad (${outcome.squadRoll.toStringAsFixed(0)}) beat the ${kind.name} '
-                  '(${outcome.monsterRoll.toStringAsFixed(0)}). You got ${outcome.partsGained} monster '
-                  'parts. Escorts lost: ${outcome.escortsLost}.'
-            )
-          : (
-              'Retreat!',
-              'The ${kind.name} (${outcome.monsterRoll.toStringAsFixed(0)}) was too strong for your squad '
-                  '(${outcome.squadRoll.toStringAsFixed(0)}). Escorts lost: ${outcome.escortsLost}. '
-                  'Bring more soldiers next time.'
-            ),
-    };
+    final String title;
+    final String body;
+    switch (event) {
+      case RegionBuiltEvent(:final castle):
+        _chooseRegionType(castle);
+        return;
+      case BonusEvent(:final point, :final food):
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('${point.name}: +${food.toStringAsFixed(0)} food and '
+              '${game.bonusRules.boostMultiplier}x production for '
+              '${game.bonusRules.boostDuration.inMinutes} minutes!'),
+        ));
+        return;
+      case SiegeEvent(:final kind, :final outcome):
+        if (outcome.held) {
+          title = 'The wall held!';
+          body = 'A ${kind.name} (attack ${outcome.attack.toStringAsFixed(0)}) hit your weakest wall, '
+              'but wall and garrison defended with ${outcome.defense.toStringAsFixed(0)}. '
+              'Garrison lost: ${outcome.garrisonLost}.';
+        } else {
+          title = 'The wall was breached!';
+          body = 'A ${kind.name} (attack ${outcome.attack.toStringAsFixed(0)}) broke through a defense of '
+              '${outcome.defense.toStringAsFixed(0)}. That wall segment is down, '
+              '${outcome.garrisonLost} garrison soldiers fell and '
+              '${outcome.foodLost.toStringAsFixed(0)} food was stolen. Walk it to rebuild it.';
+        }
+      case HuntEvent(:final kind, :final outcome):
+        if (outcome.won) {
+          title = '${kind.name} defeated!';
+          body = 'Your squad (${outcome.squadRoll.toStringAsFixed(0)}) beat the ${kind.name} '
+              '(${outcome.monsterRoll.toStringAsFixed(0)}). You got ${outcome.partsGained} monster '
+              'parts. Escorts lost: ${outcome.escortsLost}.';
+        } else {
+          title = 'Retreat!';
+          body = 'The ${kind.name} (${outcome.monsterRoll.toStringAsFixed(0)}) was too strong for your squad '
+              '(${outcome.squadRoll.toStringAsFixed(0)}). Escorts lost: ${outcome.escortsLost}. '
+              'Bring more soldiers next time.';
+        }
+    }
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
@@ -134,8 +167,39 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
+  Future<void> _chooseRegionType(Castle castle) async {
+    final r = game.economyRules;
+    // Effective hectares at today's wall strength.
+    final ha = castle.hectares * r.efficiency(castle.wallEfficiency(game.now, game.rules));
+    final type = await showDialog<RegionType>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Wall complete! What is this region for?'),
+        content: Text('Your new region is ${castle.hectares.toStringAsFixed(2)} ha. Walk its walls to make '
+            'it produce more. You can change the type later from the region button.'),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: _regionColor(RegionType.farming)),
+            onPressed: () => Navigator.pop(context, RegionType.farming),
+            icon: Icon(_regionIcon(RegionType.farming)),
+            label: Text('Farming\n+${(ha * r.foodPerHectareHour).toStringAsFixed(1)} food/h'),
+          ),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: _regionColor(RegionType.military)),
+            onPressed: () => Navigator.pop(context, RegionType.military),
+            icon: Icon(_regionIcon(RegionType.military)),
+            label: Text('Military\n+${(ha * r.soldiersPerHectareHour).toStringAsFixed(1)} soldiers/h'),
+          ),
+        ],
+      ),
+    );
+    if (type != null) game.setRegionType(castle, type);
+  }
+
   Future<void> _onMonsterTap(WildMonster m) async {
-    final d = game.distanceTo(m);
+    final d = game.distanceTo(m.position);
     if (d == null) return;
     if (d > game.combatRules.fightRange) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -161,10 +225,21 @@ class _MapScreenState extends State<MapScreen> {
     if (ok == true) game.hunt(m);
   }
 
+  void _onBonusTap(BonusPoint b) {
+    final d = game.distanceTo(b.position);
+    final ready = game.bonusReady(b);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(ready
+          ? '${b.name}: walk inside the circle${d == null ? '' : ' (${d.toStringAsFixed(0)} m away)'} '
+              'for +${game.bonusRules.foodGain.toStringAsFixed(0)} food and a production boost.'
+          : '${b.name}: already visited. Come back later.'),
+    ));
+  }
+
   @override
   void dispose() {
     _positionSub?.cancel();
-    _decayTimer?.cancel();
+    _tickTimer?.cancel();
     game.removeListener(_onGameChanged);
     super.dispose();
   }
@@ -172,8 +247,7 @@ class _MapScreenState extends State<MapScreen> {
   @override
   Widget build(BuildContext context) {
     final now = game.now;
-    final castle = game.castle;
-    final ruin = castle?.isRuin(now, game.rules) ?? false;
+    final nearest = game.nearestCastle;
 
     return Scaffold(
       body: Stack(
@@ -198,9 +272,29 @@ class _MapScreenState extends State<MapScreen> {
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'com.castlegps.castlegps',
               ),
-              if (game.drawingWall && game.walkedPath.isNotEmpty)
-                CircleLayer(
-                  circles: [
+              PolygonLayer(
+                polygons: [
+                  for (final c in game.castles)
+                    if (c.hasWall)
+                      Polygon(
+                        points: c.ring,
+                        color: (c.isRuin(now, game.rules) ? Colors.grey : _regionColor(c.type))
+                            .withValues(alpha: 0.18),
+                      ),
+                ],
+              ),
+              CircleLayer(
+                circles: [
+                  for (final b in game.bonusPoints)
+                    CircleMarker(
+                      point: b.position,
+                      radius: game.bonusRules.radius,
+                      useRadiusInMeter: true,
+                      color: (game.bonusReady(b) ? Colors.orange : Colors.grey).withValues(alpha: 0.25),
+                      borderColor: game.bonusReady(b) ? Colors.orange : Colors.grey,
+                      borderStrokeWidth: 2,
+                    ),
+                  if (game.drawingWall && game.walkedPath.isNotEmpty)
                     CircleMarker(
                       point: game.walkedPath.first,
                       radius: game.rules.closeLoopRadius,
@@ -209,12 +303,12 @@ class _MapScreenState extends State<MapScreen> {
                       borderColor: Colors.blue,
                       borderStrokeWidth: 2,
                     ),
-                  ],
-                ),
+                ],
+              ),
               PolylineLayer(
                 polylines: [
-                  if (castle != null)
-                    for (final s in castle.wall)
+                  for (final c in game.castles)
+                    for (final s in c.wall)
                       Polyline(
                         points: [s.start, s.end],
                         strokeWidth: 7,
@@ -229,7 +323,7 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                   if (game.walkedPath.length > 1)
                     Polyline(
-                      points: game.walkedPath,
+                      points: List.of(game.walkedPath),
                       strokeWidth: 4,
                       color: Colors.blueAccent,
                       pattern: StrokePattern.dashed(segments: const [10, 6]),
@@ -238,15 +332,33 @@ class _MapScreenState extends State<MapScreen> {
               ),
               MarkerLayer(
                 markers: [
-                  if (castle != null)
+                  for (final b in game.bonusPoints)
                     Marker(
-                      point: castle.position,
+                      point: b.position,
+                      width: 110,
+                      height: 44,
+                      child: GestureDetector(
+                        onTap: () => _onBonusTap(b),
+                        child: _labeledIcon(
+                          Icons.restaurant,
+                          b.name,
+                          game.bonusReady(b) ? Colors.deepOrange : Colors.grey,
+                        ),
+                      ),
+                    ),
+                  for (final c in game.castles)
+                    Marker(
+                      point: c.position,
                       width: 44,
                       height: 44,
                       child: Icon(
-                        ruin ? Icons.broken_image : Icons.castle,
+                        c.isRuin(now, game.rules) ? Icons.broken_image : Icons.castle,
                         size: 40,
-                        color: ruin ? Colors.grey : Colors.brown.shade700,
+                        color: c.isRuin(now, game.rules)
+                            ? Colors.grey
+                            : c.hasWall
+                                ? _regionColor(c.type)
+                                : Colors.brown.shade700,
                       ),
                     ),
                   for (final m in game.monsters)
@@ -256,7 +368,8 @@ class _MapScreenState extends State<MapScreen> {
                       height: 52,
                       child: GestureDetector(
                         onTap: () => _onMonsterTap(m),
-                        child: _monsterIcon(m.kind, Colors.deepPurple),
+                        child: _labeledIcon(Icons.pest_control,
+                            '${m.kind.name} ${m.kind.power.toStringAsFixed(0)}', Colors.deepPurple),
                       ),
                     ),
                   if (game.siege != null)
@@ -264,7 +377,8 @@ class _MapScreenState extends State<MapScreen> {
                       point: game.siege!.positionAt(now, game.combatRules),
                       width: 90,
                       height: 52,
-                      child: _monsterIcon(game.siege!.kind, Colors.red),
+                      child: _labeledIcon(Icons.pest_control,
+                          '${game.siege!.kind.name} ${game.siege!.kind.power.toStringAsFixed(0)}', Colors.red),
                     ),
                   if (game.position != null)
                     Marker(
@@ -286,7 +400,7 @@ class _MapScreenState extends State<MapScreen> {
               ),
             ],
           ),
-          SafeArea(child: _statusCard(castle, ruin, now)),
+          SafeArea(child: _statusCard(now)),
         ],
       ),
       floatingActionButton: FloatingActionButton.small(
@@ -298,20 +412,21 @@ class _MapScreenState extends State<MapScreen> {
         },
         child: const Icon(Icons.my_location),
       ),
-      bottomNavigationBar: SafeArea(child: _actions(castle, ruin)),
+      bottomNavigationBar: SafeArea(child: _actions(nearest)),
     );
   }
 
-  Widget _statusCard(Castle? castle, bool ruin, DateTime now) {
+  Widget _statusCard(DateTime now) {
+    final live = game.liveCastles.length;
+    final e = game.economy;
     final lines = <String>[
-      if (castle == null) 'No castle yet. Go somewhere and place one.',
-      if (castle != null && ruin) 'Your castle has fallen into ruin.',
-      if (castle != null && !ruin && castle.hasWall)
-        'Wall strength: ${castle.averageStrength(now, game.rules).toStringAsFixed(0)}'
-            ' / ${game.rules.maxStrength.toStringAsFixed(0)} · ${castle.wall.length} segments',
-      if (castle != null && !ruin && castle.hasWall)
-        'Food ${game.economy.food.toStringAsFixed(0)} · Garrison ${game.economy.garrison}'
-            ' · Escort ${game.economy.escort} · Parts ${game.economy.parts}',
+      if (game.castles.isEmpty) 'No regions yet. Tap "New region here" and walk a wall around it.',
+      if (live > 0)
+        '$live region${live == 1 ? '' : 's'} · Food ${e.food.toStringAsFixed(0)} · '
+            'Garrison ${e.garrison} · Escort ${e.escort} · Parts ${e.parts}',
+      if (game.boosted)
+        'Restaurant boost: ${game.bonusRules.boostMultiplier}x production for '
+            '${game.boostUntil!.difference(now).inMinutes + 1} more min',
       if (game.siege != null)
         'Siege! A ${game.siege!.kind.name} (attack ${game.siege!.kind.power.toStringAsFixed(0)}) is '
             '${(game.siege!.distance * (1 - game.siege!.progress(now, game.combatRules))).toStringAsFixed(0)} m '
@@ -334,6 +449,10 @@ class _MapScreenState extends State<MapScreen> {
 
   String _wallProgress() {
     final path = game.walkedPath;
+    if (path.isEmpty) {
+      return 'Walk ${GameState.wallStartDistance.toStringAsFixed(0)} m away from your castle, '
+          'then walk a loop around it to raise its wall.';
+    }
     final walked = pathLength(path);
     final min = game.rules.minLoopLength;
     if (walked < min) {
@@ -344,36 +463,29 @@ class _MapScreenState extends State<MapScreen> {
         '(${back.toStringAsFixed(0)} m away) to close it.';
   }
 
-  Widget _actions(Castle? castle, bool ruin) {
+  Widget _actions(Castle? nearest) {
     return Padding(
       padding: const EdgeInsets.all(8),
       child: Wrap(
         spacing: 8,
+        runSpacing: 4,
         alignment: WrapAlignment.center,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          if (castle == null || ruin)
+          if (!game.drawingWall)
             FilledButton.icon(
               onPressed: game.placeCastle,
               icon: const Icon(Icons.castle),
-              label: const Text('Place castle here'),
-            ),
-          if (castle != null && !ruin && !game.drawingWall)
-            FilledButton.icon(
-              onPressed: game.startWall,
-              icon: const Icon(Icons.route),
-              label: Text(castle.hasWall ? 'Redraw wall' : 'Draw wall'),
+              label: const Text('New region here'),
             ),
           if (game.drawingWall)
             OutlinedButton(onPressed: game.cancelWall, child: const Text('Cancel wall')),
-          if (castle != null && !ruin && castle.hasWall && !game.drawingWall)
+          if (nearest != null && nearest.hasWall && !game.drawingWall)
             FilledButton.tonalIcon(
-              onPressed: _openCastlePanel,
-              icon: const Icon(Icons.agriculture),
-              label: const Text('Castle'),
+              onPressed: () => _openRegionPanel(nearest),
+              icon: Icon(_regionIcon(nearest.type)),
+              label: Text('${nearest.type.label} region'),
             ),
-          if (castle != null)
-            TextButton(onPressed: _confirmAbandon, child: const Text('Abandon')),
           FilterChip(
             label: const Text('Simulate'),
             tooltip: 'Long-press the map to move there',
@@ -386,7 +498,7 @@ class _MapScreenState extends State<MapScreen> {
               tooltip: 'Skip time forward',
               onPressed: () => game.skipTime(const Duration(hours: 1)),
             ),
-            if (castle != null && castle.hasWall && game.siege == null)
+            if (game.liveCastles.isNotEmpty && game.siege == null)
               ActionChip(label: const Text('Siege now'), onPressed: game.siegeNow),
           ],
         ],
@@ -394,78 +506,66 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  void _openCastlePanel() {
+  void _openRegionPanel(Castle castle) {
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
-      builder: (context) => ListenableBuilder(
+      isScrollControlled: true,
+      builder: (sheetContext) => ListenableBuilder(
         listenable: game,
-        builder: (context, _) => _CastlePanel(game: game),
-      ),
-    );
-  }
-
-  Future<void> _confirmAbandon() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Abandon castle?'),
-        content: const Text('Your castle and its walls will be removed.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep')),
-          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Abandon')),
-        ],
-      ),
-    );
-    if (ok == true) game.abandonCastle();
-  }
-}
-
-Widget _monsterIcon(MonsterKind kind, Color color) => Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(Icons.pest_control, size: 30, color: color),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 4),
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.85),
-            borderRadius: BorderRadius.circular(4),
-          ),
-          child: Text('${kind.name} ${kind.power.toStringAsFixed(0)}',
-              style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.bold)),
+        builder: (context, _) => _RegionPanel(
+          game: game,
+          castle: castle,
+          onRedraw: () {
+            Navigator.pop(sheetContext);
+            game.startWall(castle);
+          },
+          onAbandon: () async {
+            final ok = await showDialog<bool>(
+              context: sheetContext,
+              builder: (context) => AlertDialog(
+                title: const Text('Abandon region?'),
+                content: const Text('This castle and its walls will be removed.'),
+                actions: [
+                  TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep')),
+                  TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Abandon')),
+                ],
+              ),
+            );
+            if (ok == true && sheetContext.mounted) {
+              Navigator.pop(sheetContext);
+              game.abandonCastle(castle);
+            }
+          },
         ),
-      ],
+      ),
     );
-
-/// Red (0) through yellow to green (full strength).
-Color _strengthColor(double fraction) {
-  final f = fraction.clamp(0.0, 1.0);
-  if (f <= 0) return Colors.grey;
-  return f < 0.5
-      ? Color.lerp(Colors.red, Colors.amber, f * 2)!
-      : Color.lerp(Colors.amber, Colors.green, (f - 0.5) * 2)!;
+  }
 }
 
-/// Zones, army and upgrades for the player's castle.
-class _CastlePanel extends StatelessWidget {
-  const _CastlePanel({required this.game});
+/// One region's type, plus the shared army and upgrades.
+class _RegionPanel extends StatelessWidget {
+  const _RegionPanel({
+    required this.game,
+    required this.castle,
+    required this.onRedraw,
+    required this.onAbandon,
+  });
 
   final GameState game;
+  final Castle castle;
+  final VoidCallback onRedraw;
+  final VoidCallback onAbandon;
 
   @override
   Widget build(BuildContext context) {
-    final castle = game.castle;
-    if (castle == null || !castle.hasWall) return const SizedBox(height: 120);
+    if (!game.castles.contains(castle)) return const SizedBox(height: 120);
+    final theme = Theme.of(context);
     final now = game.now;
     final e = game.economy;
-    final r = e.rates(
-      hectares: castle.hectares,
-      farmShare: castle.farmShare,
-      wallFraction: castle.wallEfficiency(now, game.rules),
-      rules: game.economyRules,
-    );
-    final farmPct = (castle.farmShare * 100).round();
-    final theme = Theme.of(context);
+    final out = game.regionOutput(castle, now);
+    final total = game.rates;
+    final wallPct = (castle.wallEfficiency(now, game.rules) * 100).round();
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -473,26 +573,30 @@ class _CastlePanel extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Your land: ${castle.hectares.toStringAsFixed(2)} ha', style: theme.textTheme.titleMedium),
+            Text('This region: ${castle.hectares.toStringAsFixed(2)} ha · walls $wallPct%',
+                style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
-            Row(
-              children: [
-                Text('Farmland $farmPct%'),
-                Expanded(
-                  child: Slider(
-                    value: castle.farmShare,
-                    divisions: 10,
-                    onChanged: game.setFarmShare,
-                  ),
-                ),
-                Text('Barracks ${100 - farmPct}%'),
+            SegmentedButton<RegionType>(
+              segments: [
+                for (final t in RegionType.values)
+                  ButtonSegment(value: t, label: Text(t.label), icon: Icon(_regionIcon(t))),
               ],
+              selected: {castle.type},
+              onSelectionChanged: (s) => game.setRegionType(castle, s.first),
             ),
-            Text('Food +${r.food.toStringAsFixed(1)}/h, upkeep -${r.upkeep.toStringAsFixed(1)}/h · '
-                'Soldiers +${r.soldiers.toStringAsFixed(1)}/h '
-                '(${game.economyRules.foodPerSoldier.toStringAsFixed(0)} food each)'),
+            const SizedBox(height: 8),
+            Text(switch (castle.type) {
+              RegionType.farming => 'Makes +${out.food.toStringAsFixed(1)} food/h.',
+              RegionType.military => 'Trains +${out.soldiers.toStringAsFixed(1)} soldiers/h '
+                  '(${game.economyRules.foodPerSoldier.toStringAsFixed(0)} food each).',
+            }),
             Text('Weak walls slow production. Walk them to keep it up.', style: theme.textTheme.bodySmall),
             const Divider(height: 24),
+            Text('All regions: food +${total.food.toStringAsFixed(1)}/h, '
+                'upkeep -${total.upkeep.toStringAsFixed(1)}/h, '
+                'soldiers +${total.soldiers.toStringAsFixed(1)}/h'
+                '${game.boosted ? ' (restaurant boost)' : ''}'),
+            const SizedBox(height: 4),
             Text('Food ${e.food.toStringAsFixed(0)} · Parts ${e.parts}', style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
             Row(
@@ -515,15 +619,64 @@ class _CastlePanel extends StatelessWidget {
               ],
             ),
             const Divider(height: 24),
-            FilledButton.icon(
-              onPressed: game.canFortify ? game.fortify : null,
-              icon: const Icon(Icons.shield),
-              label: Text('Fortify all walls +${game.combatRules.fortifyAmount.toStringAsFixed(0)} '
-                  '(${game.combatRules.fortifyCost} parts)'),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: game.canFortify(castle) ? () => game.fortify(castle) : null,
+                  icon: const Icon(Icons.shield),
+                  label: Text('Fortify +${game.combatRules.fortifyAmount.toStringAsFixed(0)} '
+                      '(${game.combatRules.fortifyCost} parts)'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: onRedraw,
+                  icon: const Icon(Icons.route),
+                  label: const Text('Redraw wall'),
+                ),
+                TextButton(onPressed: onAbandon, child: const Text('Abandon')),
+              ],
             ),
           ],
         ),
       ),
     );
   }
+}
+
+IconData _regionIcon(RegionType t) => switch (t) {
+      RegionType.farming => Icons.agriculture,
+      RegionType.military => Icons.shield,
+    };
+
+Color _regionColor(RegionType t) => switch (t) {
+      RegionType.farming => Colors.green.shade700,
+      RegionType.military => Colors.red.shade700,
+    };
+
+Widget _labeledIcon(IconData icon, String label, Color color) => Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 26, color: color),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.85),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Text(label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.bold)),
+        ),
+      ],
+    );
+
+/// Red (0) through yellow to green (full strength).
+Color _strengthColor(double fraction) {
+  final f = fraction.clamp(0.0, 1.0);
+  if (f <= 0) return Colors.grey;
+  return f < 0.5
+      ? Color.lerp(Colors.red, Colors.amber, f * 2)!
+      : Color.lerp(Colors.amber, Colors.green, (f - 0.5) * 2)!;
 }

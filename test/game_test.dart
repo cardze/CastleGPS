@@ -82,6 +82,7 @@ void main() {
   group('walls', () {
     test('decay over time and become a ruin', () {
       final castle = Castle(
+        id: 1,
         position: center,
         wall: buildWall(squareLoop(center, 50), center, t0, rules).segments,
       );
@@ -92,6 +93,7 @@ void main() {
 
     test('walking near a segment reinforces only nearby segments, capped', () {
       final castle = Castle(
+        id: 1,
         position: center,
         wall: buildWall(squareLoop(center, 50), center, t0, rules).segments,
       );
@@ -107,6 +109,7 @@ void main() {
 
     test('json round trip', () {
       final castle = Castle(
+        id: 1,
         position: center,
         wall: buildWall(squareLoop(center, 50), center, t0, rules).segments,
       );
@@ -125,30 +128,30 @@ void main() {
 
       final loop = squareLoop(center, 50);
       game.onPosition(loop.first);
-      game.startWall();
+      game.startWall(game.castles.first);
       for (final p in loop.skip(1)) {
         game.onPosition(p);
       }
       expect(game.drawingWall, isFalse);
-      expect(game.castle!.hasWall, isTrue);
+      expect(game.castles.first.hasWall, isTrue);
 
       now = t0.add(const Duration(hours: 5));
-      final before = game.castle!.averageStrength(now, game.rules);
+      final before = game.castles.first.averageStrength(now, game.rules);
       for (final p in loop.skip(1)) {
         game.onPosition(p);
       }
-      expect(game.castle!.averageStrength(now, game.rules), greaterThan(before));
+      expect(game.castles.first.averageStrength(now, game.rules), greaterThan(before));
     });
 
     test('GPS jumps earn nothing', () {
       final game = GameState(clock: () => t0);
       game.onPosition(center);
       game.placeCastle();
-      game.castle!.wall = buildWall(squareLoop(center, 50), center, t0, game.rules).segments!;
+      game.castles.first.wall = buildWall(squareLoop(center, 50), center, t0, game.rules).segments!;
       game.position = offset(center, 0, -50);
       game.onPosition(offset(center, 0, -50 + 0.5)); // jitter
       game.onPosition(offset(center, 500, -50)); // jump
-      expect(game.castle!.averageStrength(t0, game.rules), game.rules.initialStrength);
+      expect(game.castles.first.averageStrength(t0, game.rules), game.rules.initialStrength);
     });
 
     test('simulated long-press walks far targets in small steps', () {
@@ -156,14 +159,14 @@ void main() {
       game.onPosition(center);
       game.placeCastle();
       game.onPosition(offset(center, -50, -50));
-      game.startWall();
+      game.startWall(game.castles.first);
       // Four corner taps, each about 100 m apart, then back to the start.
       game.simulateWalkTo(offset(center, 50, -50));
       game.simulateWalkTo(offset(center, 50, 50));
       game.simulateWalkTo(offset(center, -50, 50));
       expect(game.walkedPath.length, greaterThan(50));
       game.simulateWalkTo(offset(center, -50, -50));
-      expect(game.castle!.hasWall, isTrue);
+      expect(game.castles.first.hasWall, isTrue);
     });
   });
 }

@@ -85,16 +85,28 @@ class WallSegment {
       );
 }
 
-class Castle {
-  Castle({required this.position, List<WallSegment>? wall, this.farmShare = 0.5})
-      : wall = wall ?? [];
+/// What the land inside a region's walls is used for.
+enum RegionType {
+  farming('Farming'),
+  military('Military');
 
+  const RegionType(this.label);
+  final String label;
+}
+
+/// One region: a castle, the wall walked around it, and what its land makes.
+class Castle {
+  Castle({
+    required this.id,
+    required this.position,
+    List<WallSegment>? wall,
+    this.type = RegionType.farming,
+  }) : wall = wall ?? [];
+
+  final int id;
   final LatLng position;
   List<WallSegment> wall;
-
-  /// Share of the land inside the walls used as farmland (0..1). The rest is
-  /// barracks.
-  double farmShare;
+  RegionType type;
 
   /// The wall as a closed ring of points.
   List<LatLng> get ring => [for (final s in wall) s.start];
@@ -154,16 +166,19 @@ class Castle {
 
   Map<String, dynamic> toJson() => {
         'position': [position.latitude, position.longitude],
+        'id': id,
         'wall': wall.map((s) => s.toJson()).toList(),
-        'farmShare': farmShare,
+        'type': type.name,
       };
 
   factory Castle.fromJson(Map<String, dynamic> json) => Castle(
+        id: json['id'] as int? ?? 0,
         position: _latLng(json['position']),
         wall: (json['wall'] as List)
             .map((s) => WallSegment.fromJson(s as Map<String, dynamic>))
             .toList(),
-        farmShare: (json['farmShare'] as num?)?.toDouble() ?? 0.5,
+        type: RegionType.values.firstWhere((t) => t.name == json['type'],
+            orElse: () => RegionType.farming),
       );
 }
 

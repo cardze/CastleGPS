@@ -85,6 +85,7 @@ class WildMonster {
 /// A monster marching on the castle to attack its weakest wall segment.
 class Siege {
   Siege({
+    required this.castleId,
     required this.kind,
     required this.start,
     required this.target,
@@ -92,6 +93,8 @@ class Siege {
     required this.startedAt,
   });
 
+  /// The region under attack.
+  final int castleId;
   final MonsterKind kind;
   final LatLng start;
   final LatLng target;
@@ -112,6 +115,7 @@ class Siege {
   bool arrived(DateTime now, CombatRules rules) => progress(now, rules) >= 1;
 
   Map<String, dynamic> toJson() => {
+        'castleId': castleId,
         'kind': kind.name,
         'start': [start.latitude, start.longitude],
         'target': [target.latitude, target.longitude],
@@ -122,6 +126,7 @@ class Siege {
   factory Siege.fromJson(Map<String, dynamic> json) {
     LatLng ll(dynamic v) => LatLng((v[0] as num).toDouble(), (v[1] as num).toDouble());
     return Siege(
+      castleId: json['castleId'] as int? ?? 0,
       kind: MonsterKind.all.firstWhere((k) => k.name == json['kind'],
           orElse: () => MonsterKind.all.first),
       start: ll(json['start']),

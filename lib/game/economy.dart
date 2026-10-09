@@ -58,27 +58,12 @@ class Economy {
 
   int get soldiers => garrison + escort;
 
-  /// Rates per hour, for display.
-  ({double food, double soldiers, double upkeep}) rates({
-    required double hectares,
-    required double farmShare,
-    required double wallFraction,
-    required EconomyRules rules,
-  }) {
-    final eff = rules.efficiency(wallFraction);
-    return (
-      food: hectares * farmShare * rules.foodPerHectareHour * eff,
-      soldiers: hectares * (1 - farmShare) * rules.soldiersPerHectareHour * eff,
-      upkeep: soldiers * rules.upkeepPerSoldierHour,
-    );
-  }
-
-  /// Runs production from [updatedAt] up to [now] in small slices.
+  /// Runs production from [updatedAt] up to [now] in small slices, given the
+  /// food and soldier output per hour of all regions together.
   void advance(
     DateTime now, {
-    required double hectares,
-    required double farmShare,
-    required double wallFraction,
+    required double foodPerHour,
+    required double soldiersPerHour,
     required EconomyRules rules,
   }) {
     var hours = now.difference(updatedAt).inSeconds / 3600.0;
@@ -90,14 +75,9 @@ class Economy {
     while (remaining > 0) {
       final dt = math.min(slice, remaining);
       remaining -= dt;
-      final r = rates(
-        hectares: hectares,
-        farmShare: farmShare,
-        wallFraction: wallFraction,
-        rules: rules,
-      );
-      food = math.max(0, food + (r.food - r.upkeep) * dt);
-      training += r.soldiers * dt;
+      final upkeep = soldiers * rules.upkeepPerSoldierHour;
+      food = math.max(0, food + (foodPerHour - upkeep) * dt);
+      training += soldiersPerHour * dt;
       while (training >= 1 - 1e-9 && food >= rules.foodPerSoldier) {
         training = math.max(0, training - 1);
         food -= rules.foodPerSoldier;
