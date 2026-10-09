@@ -49,6 +49,20 @@ class GameState extends ChangeNotifier {
     await storage?.save(jsonEncode({'castle': castle?.toJson()}));
   }
 
+  /// Debug: walks in a straight line from the current position to [target],
+  /// in small steps, as if the player had walked there.
+  void simulateWalkTo(LatLng target) {
+    final from = position;
+    if (from == null) {
+      onPosition(target);
+      return;
+    }
+    final steps = (metersBetween(from, target) / 5).ceil();
+    for (var i = 1; i <= steps; i++) {
+      onPosition(lerp(from, target, i / steps));
+    }
+  }
+
   void onPosition(LatLng p) {
     final previous = position;
     position = p;

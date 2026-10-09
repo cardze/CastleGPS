@@ -112,7 +112,7 @@ class _MapScreenState extends State<MapScreen> {
                 if (hasGesture) _followPlayer = false;
               },
               onLongPress: (_, point) {
-                if (_simulate) game.onPosition(point);
+                if (_simulate) game.simulateWalkTo(point);
               },
             ),
             children: [

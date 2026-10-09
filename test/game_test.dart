@@ -150,5 +150,20 @@ void main() {
       game.onPosition(offset(center, 500, -50)); // jump
       expect(game.castle!.averageStrength(t0, game.rules), game.rules.initialStrength);
     });
+
+    test('simulated long-press walks far targets in small steps', () {
+      final game = GameState(clock: () => t0);
+      game.onPosition(center);
+      game.placeCastle();
+      game.onPosition(offset(center, -50, -50));
+      game.startWall();
+      // Four corner taps, each about 100 m apart, then back to the start.
+      game.simulateWalkTo(offset(center, 50, -50));
+      game.simulateWalkTo(offset(center, 50, 50));
+      game.simulateWalkTo(offset(center, -50, 50));
+      expect(game.walkedPath.length, greaterThan(50));
+      game.simulateWalkTo(offset(center, -50, -50));
+      expect(game.castle!.hasWall, isTrue);
+    });
   });
 }
