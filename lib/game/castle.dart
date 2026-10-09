@@ -14,7 +14,7 @@ class WallRules {
     this.reinforceRadius = 15,
     this.segmentLength = 25,
     this.minLoopLength = 150,
-    this.closeLoopRadius = 25,
+    this.closeLoopRadius = 40,
   });
 
   final double maxStrength;

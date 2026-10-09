@@ -136,7 +136,7 @@ class GameState extends ChangeNotifier {
     walkedPath
       ..clear()
       ..add(p);
-    message = 'Walk a loop around your castle and come back here to close it.';
+    message = null;
     notifyListeners();
   }
 

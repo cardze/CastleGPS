@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'game/castle.dart';
 import 'game/game_state.dart';
+import 'game/geo.dart';
 import 'services/location_service.dart';
 
 void main() {
@@ -122,6 +123,19 @@ class _MapScreenState extends State<MapScreen> {
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'com.castlegps.castlegps',
               ),
+              if (game.drawingWall && game.walkedPath.isNotEmpty)
+                CircleLayer(
+                  circles: [
+                    CircleMarker(
+                      point: game.walkedPath.first,
+                      radius: game.rules.closeLoopRadius,
+                      useRadiusInMeter: true,
+                      color: Colors.blue.withValues(alpha: 0.15),
+                      borderColor: Colors.blue,
+                      borderStrokeWidth: 2,
+                    ),
+                  ],
+                ),
               PolylineLayer(
                 polylines: [
                   if (castle != null)
@@ -196,7 +210,7 @@ class _MapScreenState extends State<MapScreen> {
       if (castle != null && !ruin && castle.hasWall)
         'Wall strength: ${castle.averageStrength(now, game.rules).toStringAsFixed(0)}'
             ' / ${game.rules.maxStrength.toStringAsFixed(0)} · ${castle.wall.length} segments',
-      if (game.drawingWall) 'Wall walked: ${game.walkedPath.length} points',
+      if (game.drawingWall) _wallProgress(),
       if (game.message != null) game.message!,
     ];
     return Card(
@@ -210,6 +224,18 @@ class _MapScreenState extends State<MapScreen> {
         ),
       ),
     );
+  }
+
+  String _wallProgress() {
+    final path = game.walkedPath;
+    final walked = pathLength(path);
+    final min = game.rules.minLoopLength;
+    if (walked < min) {
+      return 'Walk a loop around your castle: ${walked.toStringAsFixed(0)} m of at least ${min.toStringAsFixed(0)} m';
+    }
+    final back = path.isEmpty ? 0.0 : metersBetween(path.last, path.first);
+    return 'Wall walked: ${walked.toStringAsFixed(0)} m. Return to the blue circle '
+        '(${back.toStringAsFixed(0)} m away) to close it.';
   }
 
   Widget _actions(Castle? castle, bool ruin) {
