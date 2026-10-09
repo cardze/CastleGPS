@@ -86,11 +86,46 @@ class WallSegment {
 }
 
 class Castle {
-  Castle({required this.position, List<WallSegment>? wall})
+  Castle({required this.position, List<WallSegment>? wall, this.farmShare = 0.5})
       : wall = wall ?? [];
 
   final LatLng position;
   List<WallSegment> wall;
+
+  /// Share of the land inside the walls used as farmland (0..1). The rest is
+  /// barracks.
+  double farmShare;
+
+  /// The wall as a closed ring of points.
+  List<LatLng> get ring => [for (final s in wall) s.start];
+
+  /// Land inside the walls, in hectares.
+  double get hectares => hasWall ? polygonArea(ring) / 10000 : 0;
+
+  /// Average wall strength as a fraction of the maximum (0..1).
+  double wallEfficiency(DateTime now, WallRules rules) =>
+      averageStrength(now, rules) / rules.maxStrength;
+
+  /// Index of the weakest wall segment, or -1 without a wall.
+  int weakestSegment(DateTime now, WallRules rules) {
+    var best = -1;
+    var bestStrength = double.infinity;
+    for (var i = 0; i < wall.length; i++) {
+      final s = wall[i].strengthAt(now, rules);
+      if (s < bestStrength) {
+        best = i;
+        bestStrength = s;
+      }
+    }
+    return best;
+  }
+
+  /// Adds [amount] strength to every segment.
+  void fortify(double amount, DateTime now, WallRules rules) {
+    for (final s in wall) {
+      s.reinforce(amount, now, rules);
+    }
+  }
 
   bool get hasWall => wall.isNotEmpty;
 
@@ -120,6 +155,7 @@ class Castle {
   Map<String, dynamic> toJson() => {
         'position': [position.latitude, position.longitude],
         'wall': wall.map((s) => s.toJson()).toList(),
+        'farmShare': farmShare,
       };
 
   factory Castle.fromJson(Map<String, dynamic> json) => Castle(
@@ -127,6 +163,7 @@ class Castle {
         wall: (json['wall'] as List)
             .map((s) => WallSegment.fromJson(s as Map<String, dynamic>))
             .toList(),
+        farmShare: (json['farmShare'] as num?)?.toDouble() ?? 0.5,
       );
 }
 
