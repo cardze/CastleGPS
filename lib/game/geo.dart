@@ -90,3 +90,34 @@ bool containsPoint(List<LatLng> ring, LatLng p) {
   }
   return inside;
 }
+
+/// Area in square meters enclosed by [ring] (shoelace formula on a local
+/// projection).
+double polygonArea(List<LatLng> ring) {
+  if (ring.length < 3) return 0;
+  final origin = ring.first;
+  final pts = ring.map((q) => _project(q, origin)).toList();
+  var sum = 0.0;
+  for (var i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    sum += (pts[j].x * pts[i].y) - (pts[i].x * pts[j].y);
+  }
+  return sum.abs() / 2;
+}
+
+/// The point [meters] away from [from] in direction [bearingRadians]
+/// (0 = north, clockwise).
+LatLng offsetBy(LatLng from, double meters, double bearingRadians) {
+  final north = meters * math.cos(bearingRadians);
+  final east = meters * math.sin(bearingRadians);
+  final cosLat = math.cos(from.latitude * math.pi / 180);
+  return LatLng(
+    from.latitude + north / _earthRadius * 180 / math.pi,
+    from.longitude + east / (_earthRadius * cosLat) * 180 / math.pi,
+  );
+}
+
+/// Compass bearing in radians from [a] to [b] (0 = north, clockwise).
+double bearingBetween(LatLng a, LatLng b) {
+  final p = _project(b, a);
+  return math.atan2(p.x, p.y);
+}

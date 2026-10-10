@@ -85,12 +85,59 @@ class WallSegment {
       );
 }
 
-class Castle {
-  Castle({required this.position, List<WallSegment>? wall})
-      : wall = wall ?? [];
+/// What the land inside a region's walls is used for.
+enum RegionType {
+  farming('Farming'),
+  military('Military');
 
+  const RegionType(this.label);
+  final String label;
+}
+
+/// One region: a castle, the wall walked around it, and what its land makes.
+class Castle {
+  Castle({
+    required this.id,
+    required this.position,
+    List<WallSegment>? wall,
+    this.type = RegionType.farming,
+  }) : wall = wall ?? [];
+
+  final int id;
   final LatLng position;
   List<WallSegment> wall;
+  RegionType type;
+
+  /// The wall as a closed ring of points.
+  List<LatLng> get ring => [for (final s in wall) s.start];
+
+  /// Land inside the walls, in hectares.
+  double get hectares => hasWall ? polygonArea(ring) / 10000 : 0;
+
+  /// Average wall strength as a fraction of the maximum (0..1).
+  double wallEfficiency(DateTime now, WallRules rules) =>
+      averageStrength(now, rules) / rules.maxStrength;
+
+  /// Index of the weakest wall segment, or -1 without a wall.
+  int weakestSegment(DateTime now, WallRules rules) {
+    var best = -1;
+    var bestStrength = double.infinity;
+    for (var i = 0; i < wall.length; i++) {
+      final s = wall[i].strengthAt(now, rules);
+      if (s < bestStrength) {
+        best = i;
+        bestStrength = s;
+      }
+    }
+    return best;
+  }
+
+  /// Adds [amount] strength to every segment.
+  void fortify(double amount, DateTime now, WallRules rules) {
+    for (final s in wall) {
+      s.reinforce(amount, now, rules);
+    }
+  }
 
   bool get hasWall => wall.isNotEmpty;
 
@@ -119,14 +166,19 @@ class Castle {
 
   Map<String, dynamic> toJson() => {
         'position': [position.latitude, position.longitude],
+        'id': id,
         'wall': wall.map((s) => s.toJson()).toList(),
+        'type': type.name,
       };
 
   factory Castle.fromJson(Map<String, dynamic> json) => Castle(
+        id: json['id'] as int? ?? 0,
         position: _latLng(json['position']),
         wall: (json['wall'] as List)
             .map((s) => WallSegment.fromJson(s as Map<String, dynamic>))
             .toList(),
+        type: RegionType.values.firstWhere((t) => t.name == json['type'],
+            orElse: () => RegionType.farming),
       );
 }
 
